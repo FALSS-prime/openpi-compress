@@ -1,4 +1,21 @@
-# openpi
+# openpi-compress
+
+Fork of [Physical Intelligence's openpi](https://github.com/Physical-Intelligence/openpi) with added task filtering support for efficient training on specific LIBERO tasks.
+
+## New Features
+
+**Task Filtering for LIBERO Dataset**: Train on specific LIBERO tasks instead of the entire dataset. See [LIBERO_TASK_FILTERING.md](LIBERO_TASK_FILTERING.md) for detailed usage.
+
+Quick example:
+```bash
+# Train on LIBERO-Spatial tasks (tasks 0-9)
+uv run scripts/compute_norm_stats.py --config-name pi05_libero_spatial
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 uv run scripts/train.py pi05_libero_spatial --exp-name=spatial_exp --overwrite
+```
+
+---
+
+# openpi (Original)
 
 openpi holds open-source models and packages for robotics, published by the [Physical Intelligence team](https://www.physicalintelligence.company/).
 
