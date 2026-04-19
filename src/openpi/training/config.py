@@ -29,6 +29,11 @@ import openpi.training.optimizer as _optimizer
 import openpi.training.weight_loaders as weight_loaders
 import openpi.transforms as _transforms
 
+# TinyVLA: import from tiny_vla/ (lives next to src/ in the openpi repo root)
+import sys as _sys
+_sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[4]))
+from tiny_vla.configs.pi0_tiny_config import TinyVLAConfig as _TinyVLAConfig  # noqa: E402
+
 ModelType: TypeAlias = _model.ModelType
 # Work around a tyro issue with using nnx.filterlib.Filter directly.
 Filter: TypeAlias = nnx.filterlib.Filter
@@ -89,6 +94,10 @@ class DataConfig:
 
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
+
+    # Filter episodes by task indices. If None, all episodes will be used.
+    # Example: [0, 1, 2] will only use episodes with task_index 0, 1, or 2.
+    task_indices_filter: Sequence[int] | None = None
 
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
@@ -741,11 +750,63 @@ _CONFIGS = [
         ema_decay=None,
     ),
     TrainConfig(
+        name="pi05_libero_spatial",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                task_indices_filter=list(range(10)),  # tasks 0-9 = LIBERO-Spatial
+            ),
+            extra_delta_transform=False,
+        ),
+        batch_size=64,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=5e-5,
+            decay_steps=30_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        pytorch_weight_path="/path/to/your/pytorch_weight_path",
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
         name="pi05_libero",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
         data=LeRobotLiberoDataConfig(
             repo_id="physical-intelligence/libero",
             base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        batch_size=256,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        pytorch_weight_path="/path/to/your/pytorch_weight_path",
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        # Example config for training on specific LIBERO tasks only
+        # Modify task_indices_filter to select which tasks to train on
+        name="pi05_libero_single_task",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                # Filter to specific task indices. Example: [0] for task 0 only, [0, 1, 2] for tasks 0-2
+                # See ~/.cache/huggingface/lerobot/physical-intelligence/libero/meta/tasks.jsonl for all tasks
+                task_indices_filter=[0],  # Change this to your desired task indices
+            ),
             extra_delta_transform=False,
         ),
         batch_size=256,
@@ -929,6 +990,47 @@ _CONFIGS = [
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         num_train_steps=20_000,
+    ),
+    #
+    # TinyVLA configs.
+    #
+    TrainConfig(
+        name="tiny_vla_libero",
+        model=_TinyVLAConfig(
+            action_dim=7,
+            action_horizon=50,
+            max_token_len=48,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+        ),
+        weight_loader=weight_loaders.NoOpWeightLoader(),
+        num_train_steps=30_000,
+        batch_size=16,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=1e-4,
+            decay_steps=30_000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.99,
+        wandb_enabled=False,
+        save_interval=1000,
+        log_interval=50,
+        overwrite=True,
+    ),
+    TrainConfig(
+        name="debug_tiny_vla",
+        model=_TinyVLAConfig(action_dim=7, action_horizon=50, max_token_len=48),
+        data=FakeDataConfig(),
+        batch_size=2,
+        num_train_steps=5,
+        overwrite=True,
+        exp_name="debug",
+        wandb_enabled=False,
     ),
     #
     # Debugging configs.

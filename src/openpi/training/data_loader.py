@@ -96,6 +96,36 @@ class IterableTransformedDataset(IterableDataset[T_co]):
         return len(self._dataset)
 
 
+class EpisodeFilteredDataset(Dataset):
+    """Dataset wrapper that filters samples by episode index."""
+
+    def __init__(self, dataset: Dataset, episode_indices: set[int]):
+        self._dataset = dataset
+        self._episode_indices = episode_indices
+        self._filtered_indices = []
+
+        # Build index mapping by checking episode_index in each sample
+        logging.info(f"Building filtered index mapping for {len(episode_indices)} episodes...")
+        for i in range(len(dataset)):
+            sample = dataset[i]
+            if 'episode_index' in sample:
+                ep_idx = int(sample['episode_index'])
+                if ep_idx in self._episode_indices:
+                    self._filtered_indices.append(i)
+
+        logging.info(f"Filtered dataset: {len(self._filtered_indices)} samples from {len(episode_indices)} episodes")
+
+        if len(self._filtered_indices) == 0:
+            raise ValueError(f"No samples found for the specified episodes")
+
+    def __getitem__(self, index: SupportsIndex) -> dict:
+        actual_index = self._filtered_indices[index.__index__()]
+        return self._dataset[actual_index]
+
+    def __len__(self) -> int:
+        return len(self._filtered_indices)
+
+
 class FakeDataset(Dataset):
     def __init__(self, model_config: _model.BaseModelConfig, num_samples: int):
         self._num_samples = num_samples
@@ -138,11 +168,60 @@ def create_torch_dataset(
         return FakeDataset(model_config, num_samples=1024)
 
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
+
+    # Build episode filter using parquet files directly (fast)
+    episodes = None
+    if data_config.task_indices_filter is not None:
+        import json
+        from pathlib import Path
+        import pyarrow.parquet as pq
+
+        logging.info(f"Filtering dataset to task indices: {data_config.task_indices_filter}")
+        task_indices_set = set(data_config.task_indices_filter)
+
+        # Load task descriptions from tasks.jsonl
+        tasks_file = Path(dataset_meta.root) / "meta" / "tasks.jsonl"
+        task_descriptions = {}
+        if tasks_file.exists():
+            with open(tasks_file, 'r') as f:
+                for line in f:
+                    task_data = json.loads(line)
+                    task_descriptions[task_data['task_index']] = task_data['task']
+
+        target_tasks = {task_descriptions[i] for i in task_indices_set if i in task_descriptions}
+
+        # Read episodes.jsonl to find matching episodes (instant - just text matching)
+        episodes_file = Path(dataset_meta.root) / "meta" / "episodes.jsonl"
+        filtered_episodes = []
+        if episodes_file.exists():
+            with open(episodes_file, 'r') as f:
+                for line in f:
+                    ep = json.loads(line)
+                    if ep['tasks'] and ep['tasks'][0] in target_tasks:
+                        filtered_episodes.append(ep['episode_index'])
+
+        # Read one parquet file to get the global frame indices for filtered episodes
+        # This lets us build a fast index without iterating over the full dataset
+        data_dir = Path(dataset_meta.root) / "data"
+        parquet_files = sorted(data_dir.rglob("*.parquet"))
+        filtered_frame_indices = []
+        filtered_episode_set = set(filtered_episodes)
+        for pf in parquet_files:
+            table = pq.read_table(pf, columns=["index", "episode_index"])
+            df = table.to_pydict()
+            for idx, ep_idx in zip(df["index"], df["episode_index"]):
+                if int(ep_idx) in filtered_episode_set:
+                    filtered_frame_indices.append(int(idx))
+
+        logging.info(f"Filtered to {len(filtered_episodes)} episodes, {len(filtered_frame_indices)} frames")
+        episodes = filtered_episodes
+
     dataset = lerobot_dataset.LeRobotDataset(
         data_config.repo_id,
         delta_timestamps={
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },
+        episodes=episodes,
     )
 
     if data_config.prompt_from_task:
